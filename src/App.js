@@ -1,6 +1,7 @@
 import React, {Component} from 'react';
 import './App.css';
 import olGeometryCircle from 'ol/geom/circle';
+import olGeometryPoint from 'ol/geom/point';
 import olFeature from 'ol/feature';
 import olLayerVector from 'ol/layer/vector';
 import proj from 'ol/proj';
@@ -8,7 +9,8 @@ import olStyleIcon from 'ol/style/icon'
 import olStyle from 'ol/style/style';
 import olStyleStroke from 'ol/style/stroke';
 import olSourceVector from 'ol/source/vector';
-import {Controls, Map, Popup, PopupBase, loadDataLayer, LayerPanel, PopupActionGroup, PopupActionItem} from '@bayer/ol-kit'
+import distance from '@turf/distance';
+import {Controls, Map, Popup, PopupBase, loadDataLayer, LayerPanel} from '@bayer/ol-kit'
 import axios from 'axios';
 import logo from './communibee.png'
 import bee from './bee.png'
@@ -26,10 +28,16 @@ class App extends Component {
       hives: [],
       hiveName: '',
       addingHive: false,
+      reportingSwarm: false,
     }
   }
 
   getAllHives = map => {
+    map.getLayers().getArray().forEach(layer => {
+      if (layer.type === 'VECTOR') {
+        map.removeLayer(layer)
+      }
+    });
     axios
       .get('https://communibee.herokuapp.com/hives', {
         headers: {
@@ -38,32 +46,59 @@ class App extends Component {
       })
       .then(res => {
         this.setState({hives: res.data});
-        // const hiveLayer = new olLayerVector({
-        //   name: 'Hives',
-        //   source: new olSourceVector()
-        // });
-        res.data.forEach(hive => {
-          loadDataLayer(map, hive.geojson).then(layer => {
-            const foragingCircle = new olFeature({
-              geometry: new olGeometryCircle(layer.getSource().getFeatures()[0].getGeometry().getCoordinates(), 3219),
-              name: 'Foraging Area',
-              associatedHive: layer.getSource().getFeatures()[0].getProperties().name,
-              associatedHiveId: layer.getSource().getFeatures()[0].getProperties().hiveId
-            });
-            foragingCircle.setStyle(new olStyle({
-              stroke: new olStyleStroke({
-                color: 'black'
-              })
-            }));
-            layer.getSource().getFeatures()[0].setStyle(new olStyle({
-              image: new olStyleIcon({
-                src: bee,
-                scale: 0.05,
-              })
-            }));
-            layer.getSource().addFeature(foragingCircle);
+        const hiveLayer = new olLayerVector({
+          title: 'Hives',
+          source: new olSourceVector()
+        });
+        const hiveCoords = res.data.map(hive => {
+          return {hiveId: hive.geojson.features[0].properties.hiveId, coords: hive.geojson.features[0].geometry.coordinates
+          }});
+        const robbingDanger = [];
+        const sharedForage = [];
+        hiveCoords.forEach(loc => {
+          hiveCoords.forEach(loc2 => {
+            const hiveDist = distance(loc.coords, loc2.coords, {units: 'miles'});
+            if (hiveDist !== 0 && hiveDist < 4) {
+              sharedForage.push(loc.hiveId);
+            }
+            if (hiveDist !== 0 && hiveDist < 2) {
+              robbingDanger.push(loc.hiveId);
+            }
           })
-        })
+        });
+        const hiveFeatures = res.data.map(hive => {
+          const {name, hiveId}  = hive.geojson.features[0].properties;
+          const hiveCoords = proj.transform(hive.geojson.features[0].geometry.coordinates, 'EPSG:4326', 'EPSG:3857');
+          const hiveLocation = new olFeature({
+            geometry: new olGeometryPoint(hiveCoords),
+            name: name,
+            hiveId: hiveId,
+            diseases_or_pests: hive.issues,
+            robbingDanger: robbingDanger.includes(hiveId),
+            sharedForage: sharedForage.includes(hiveId),
+          });
+          hiveLocation.setStyle(new olStyle({
+            image: new olStyleIcon({
+              src: bee,
+              scale: 0.05,
+              anchor: [0.5, 1]
+            })
+          }));
+          const foragingCircle = new olFeature({
+            geometry: new olGeometryCircle(hiveCoords, 4100),
+            name: 'Foraging Area',
+            associatedHive: name,
+            associatedHiveId: hiveId,
+          });
+          foragingCircle.setStyle(new olStyle({
+            stroke: new olStyleStroke({
+              color: 'black'
+            })
+          }));
+          return [hiveLocation, foragingCircle]
+        });
+        hiveLayer.getSource().addFeatures(hiveFeatures.flat());
+        map.addLayer(hiveLayer)
       });
   };
 
@@ -81,11 +116,16 @@ class App extends Component {
         long: this.state.contextCoords[0],
       }, {headers: {
         'Authorization': '4c7a0b5d-13ee-49a3-9c5e-f691c49af963'
-      }}).then(() => this.getAllHives(this.state.myMap))
+      }}).then(() => this.getAllHives(this.state.myMap));
+    this.setState({hiveName: ''});
   };
 
   toggleAddingHive = () => {
     this.setState({addingHive: !this.state.addingHive})
+  };
+
+  toggleReportingSwarm = () => {
+    this.setState({reportingSwarm: !this.state.reportingSwarm})
   };
 
   onMapInit = map => {
@@ -102,15 +142,24 @@ class App extends Component {
   };
 
   showContext = () => {
-    this.setState({contextOpen: true, addingHive: false})
+    this.setState({contextOpen: true, addingHive: false, reportingSwarm: false})
   };
 
   hideContext = () => {
-    this.setState({contextOpen: false, addingHive: false})
+    this.setState({contextOpen: false, addingHive: false, reportingSwarm: false})
   };
 
   handleHiveNameChange = (evt) => {
     this.setState({hiveName: evt.target.value});
+  };
+
+  contextButtons = () => {
+    return (
+      <div>
+        <button onClick={() => this.toggleAddingHive()}>Add Hive</button>
+        <button onClick={() => this.toggleReportingSwarm()}>Swarm Report</button>
+      </div>
+    )
   };
 
   render() {
@@ -125,6 +174,7 @@ class App extends Component {
           <Popup />
           <PopupBase pixel={this.state.contextLocation} show={this.state.contextOpen} >
             <div>
+              {this.state.addingHive || this.state.reportingSwarm ? null: this.contextButtons()}
               {this.state.addingHive ? (
                 <div>
                   <label>
@@ -133,7 +183,12 @@ class App extends Component {
                   </label>
                   <button onClick={() => this.addHive()}>Save</button>
                 </div>
-                ): <button onClick={() => this.toggleAddingHive()}>Add Hive</button>}
+              ): null}
+              {this.state.reportingSwarm ? (
+                <div>
+                  Swarm Report
+                </div>
+              ) : null}
             </div>
           </PopupBase>
         </Map>
