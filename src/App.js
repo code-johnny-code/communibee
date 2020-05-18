@@ -2,6 +2,7 @@ import React, {Component} from 'react';
 import './App.css';
 import olGeometryCircle from 'ol/geom/circle';
 import olGeometryPoint from 'ol/geom/point';
+import olGeometryPolygon from 'ol/geom/polygon';
 import olFeature from 'ol/feature';
 import olLayerVector from 'ol/layer/vector';
 import proj from 'ol/proj';
@@ -10,7 +11,7 @@ import olStyle from 'ol/style/style';
 import olStyleStroke from 'ol/style/stroke';
 import olSourceVector from 'ol/source/vector';
 import distance from '@turf/distance';
-import {Controls, Map, Popup, PopupBase, loadDataLayer, LayerPanel} from '@bayer/ol-kit'
+import {Controls, Map, Popup, PopupBase, LayerPanel} from '@bayer/ol-kit'
 import axios from 'axios';
 import logo from './communibee.png'
 import bee from './bee.png'
@@ -51,7 +52,10 @@ class App extends Component {
           source: new olSourceVector()
         });
         const hiveCoords = res.data.map(hive => {
-          return {hiveId: hive.geojson.features[0].properties.hiveId, coords: hive.geojson.features[0].geometry.coordinates
+          return {
+            hiveId: hive.geojson.features[0].properties.hiveId,
+            coords: hive.geojson.features[0].geometry.coordinates,
+            h3Geom: hive.h3Geom,
           }});
         const robbingDanger = [];
         const sharedForage = [];
@@ -69,6 +73,7 @@ class App extends Component {
         const hiveFeatures = res.data.map(hive => {
           const {name, hiveId}  = hive.geojson.features[0].properties;
           const hiveCoords = proj.transform(hive.geojson.features[0].geometry.coordinates, 'EPSG:4326', 'EPSG:3857');
+          const h3Coords = hive.h3Geom.map(pair => proj.transform(pair, 'EPSG:4326', 'EPSG:3857'));
           const hiveLocation = new olFeature({
             geometry: new olGeometryPoint(hiveCoords),
             name: name,
@@ -84,6 +89,16 @@ class App extends Component {
               anchor: [0.5, 1]
             })
           }));
+          const hiveAbstractedLocation = new olFeature({
+            geometry: new olGeometryPolygon([h3Coords]),
+            name: 'Abstracted Location',
+          });
+          hiveAbstractedLocation.setStyle(new olStyle({
+            stroke: new olStyleStroke({
+              color: 'gray',
+              width: 2,
+            })
+          }));
           const foragingCircle = new olFeature({
             geometry: new olGeometryCircle(hiveCoords, 4100),
             name: 'Foraging Area',
@@ -92,10 +107,12 @@ class App extends Component {
           });
           foragingCircle.setStyle(new olStyle({
             stroke: new olStyleStroke({
-              color: 'black'
+              color: 'orange',
+              width: 2,
+              lineDash: [1, 3]
             })
           }));
-          return [hiveLocation, foragingCircle]
+          return [hiveLocation, foragingCircle, hiveAbstractedLocation]
         });
         hiveLayer.getSource().addFeatures(hiveFeatures.flat());
         map.addLayer(hiveLayer)
@@ -166,13 +183,13 @@ class App extends Component {
     return (
       <div>
         <div style={{width: '100%', backgroundColor: 'black', display: 'flex', justifyContent: 'center'}}>
-          <img src={logo} style={{height: 60}} alt={'CommuniBee'}/>
+          <img src={logo} style={{height: 90}} alt={'CommuniBee'}/>
         </div>
         <Map onMapInit={this.onMapInit} >
           <LayerPanel />
           <Controls />
-          <Popup />
-          <PopupBase pixel={this.state.contextLocation} show={this.state.contextOpen} >
+          <Popup actions={[<button>Report</button>]}/>
+          <PopupBase pixel={this.state.contextLocation} show={this.state.contextOpen} height={20}>
             <div>
               {this.state.addingHive || this.state.reportingSwarm ? null: this.contextButtons()}
               {this.state.addingHive ? (
